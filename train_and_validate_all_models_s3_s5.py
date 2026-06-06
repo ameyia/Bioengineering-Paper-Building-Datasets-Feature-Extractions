@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
-from typing import Dict, Tuple
+import os
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Dict, Tuple, List
 
 import joblib
 import pandas as pd
@@ -20,11 +22,42 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
+from Bio.SeqUtils.ProtParam import ProteinAnalysis
+from propy.CTD import CalculateCTD
+
 try:
     from xgboost import XGBClassifier
     HAS_XGBOOST = True
 except Exception:
     HAS_XGBOOST = False
+
+
+# =============================
+# EXTERNAL DATASETS
+# =============================
+
+external_sequences_s3 = [
+    ("SGGHQTAVPKISKQGLGGDFEEIPSDEIIE", 1),   # avathrin
+    ("SDEAVRAIPKMYSTAPPGDFETIPDDAIEEREMKAR", 1),
+    ("SDEAVRAIPKMYSTAPPGDFETIPDDAIEER", 1),
+    ("SDEAVRAIPKMYSTAPPGDFETIPDDAIEE", 1),
+    ("SDEAVRAIPKMYSTAPPGDFEEIPDDAIEE", 1),        # ultravariegin
+    ("SDQGDVAIPKMYSTAPPGDFEEIPDDAIEE", 1),        # UV003
+    ("SDEAVRAEPKMHKTAPPGDFEEIPDDAIEE", 1),        # UV004
+    ("SDEAVRAIPKMYSTAPPGDFEEIPEEYLDDES", 1),      # UV005
+    ("SDEAVRAIPKMYSTAPPGDFEEIPDDEIEE", 1),        # UV012
+    ("SDEAVRAIPKMYSQAPPGDFEEIPDDAIEE", 1),        # UV013
+    ("MYSTAPPGDFEEIPDDAIEE", 1),                  # UV011
+]
+
+external_sequences_s5 = [
+    ("LVYTDCTESGQNLCLCEGSNVCGQGNKCILGSDGEKNQCVTGEGTPKPQSHNDGDFEEIPEEYLQ", 1),  # lepirudin
+    ("VVYTDCTESGQNLCLCEGSNVCGQGNKCILGSDGEKNQCVTGEGTPKPQSHNDGDFEEIPEEYLQ", 1),  # desirudin
+    ("FPRPGGGGNGDFEEIPEEYL", 1),  # bivalirudin
+]
+
+amino_acids = list("ACDEFGHIKLMNPQRSTVWY")
+dipeptides = [a + b for a in amino_acids for b in amino_acids]
 
 
 @dataclass
@@ -35,9 +68,14 @@ class RunResult:
     test_mcc: float
     test_accuracy: float
     test_f1: float
+    generalization_gap_abs: float
 
 
-def load_dataset(path: str) -> Tuple[pd.DataFrame, pd.Series]:
+def dataset_tag_from_path(path: str) -> str:
+    return Path(path).stem
+
+
+def load_dataset(path: str) -> Tuple[pd.DataFrame, pd.Series, List[str]]:
     if path.endswith(".csv"):
         df = pd.read_csv(path)
     else:
@@ -49,7 +87,7 @@ def load_dataset(path: str) -> Tuple[pd.DataFrame, pd.Series]:
     feature_cols = [c for c in df.columns if c not in {"label", "sequence"}]
     x = df[feature_cols].copy()
     y = df["label"].astype(int)
-    return x, y
+    return x, y, feature_cols
 
 
 def split_data(x, y, random_state):
@@ -58,7 +96,11 @@ def split_data(x, y, random_state):
     )
 
     x_train, x_val, y_train, y_val = train_test_split(
-        x_trainval, y_trainval, test_size=0.25, stratify=y_trainval, random_state=random_state
+        x_trainval,
+        y_trainval,
+        test_size=0.25,
+        stratify=y_trainval,
+        random_state=random_state,
     )
 
     return {
@@ -78,9 +120,7 @@ def build_search_spaces(scale_pos_weight: float, random_state: int):
             ("scaler", StandardScaler()),
             ("clf", SVC(kernel="linear", class_weight="balanced", probability=True)),
         ]),
-        "param_distributions": {
-            "clf__C": loguniform(1e-3, 1e3),
-        },
+        "param_distributions": {"clf__C": loguniform(1e-3, 1e3)},
     }
 
     searches["svm_rbf"] = {
@@ -106,9 +146,7 @@ def build_search_spaces(scale_pos_weight: float, random_state: int):
                 random_state=random_state,
             )),
         ]),
-        "param_distributions": {
-            "clf__C": loguniform(1e-3, 1e3),
-        },
+        "param_distributions": {"clf__C": loguniform(1e-3, 1e3)},
     }
 
     searches["random_forest"] = {
@@ -192,28 +230,119 @@ def tune_and_evaluate(
 
     y_pred = search.best_estimator_.predict(x_test)
 
+    cv_mcc = float(search.best_score_)
+    test_mcc = float(matthews_corrcoef(y_test, y_pred))
+    test_acc = float(accuracy_score(y_test, y_pred))
+    test_f1 = float(f1_score(y_test, y_pred, zero_division=0))
+
     result = RunResult(
         model_name=model_name,
         best_params=search.best_params_,
-        cv_mcc=float(search.best_score_),
-        test_mcc=float(matthews_corrcoef(y_test, y_pred)),
-        test_accuracy=float(accuracy_score(y_test, y_pred)),
-        test_f1=float(f1_score(y_test, y_pred, zero_division=0)),
+        cv_mcc=cv_mcc,
+        test_mcc=test_mcc,
+        test_accuracy=test_acc,
+        test_f1=test_f1,
+        generalization_gap_abs=abs(cv_mcc - test_mcc),
     )
 
     return result, search.best_estimator_
 
 
+def featurize_external(sequence_label_pairs, feature_cols: List[str]):
+    rows = []
+
+    use_ctd = any("_" in c for c in feature_cols)
+    use_dpc = any(len(c) == 2 and c in dipeptides for c in feature_cols)
+
+    for seq, label in sequence_label_pairs:
+        seq = seq.strip().upper()
+        if len(seq) == 0 or "X" in seq:
+            continue
+
+        try:
+            analysis = ProteinAnalysis(seq)
+            length = len(seq)
+
+            feature_dict = {
+                "sequence": seq,
+                "length": length,
+                "mw": analysis.molecular_weight(),
+                "aromaticity": analysis.aromaticity(),
+                "pI": analysis.isoelectric_point(),
+                "instability": analysis.instability_index(),
+                "label": label,
+            }
+
+            for aa in amino_acids:
+                feature_dict[aa] = (seq.count(aa) / length) * 100
+
+            if use_ctd:
+                try:
+                    ctd = CalculateCTD(seq)
+                    feature_dict.update(ctd)
+                except Exception:
+                    print(f"CTD failed for external sequence: {seq}")
+
+            if use_dpc:
+                dpc = dict.fromkeys(dipeptides, 0)
+                total_dipeptides = len(seq) - 1
+                if total_dipeptides > 0:
+                    for i in range(total_dipeptides):
+                        dp = seq[i:i+2]
+                        if dp in dpc:
+                            dpc[dp] += 1
+                    for dp in dpc:
+                        dpc[dp] = (dpc[dp] / total_dipeptides) * 100
+                feature_dict.update(dpc)
+
+            rows.append(feature_dict)
+
+        except Exception as e:
+            print(f"Error with external sequence: {seq}")
+            print(e)
+
+    return pd.DataFrame(rows)
+
+
+def save_external_predictions(dataset_name, sequence_label_pairs, feature_cols, estimators, output_dir):
+    df_external = featurize_external(sequence_label_pairs, feature_cols)
+    X_external = df_external[feature_cols].copy()
+
+    for model_name, model in estimators.items():
+        probs = model.predict_proba(X_external)[:, 1]
+        preds = model.predict(X_external)
+
+        df_out = df_external.copy()
+        df_out["predicted_label"] = preds
+        df_out["prediction_probability"] = probs
+        df_out = df_out.sort_values("prediction_probability", ascending=False)
+
+        out_path = os.path.join(output_dir, f"{model_name}_{dataset_name}_predictions.tsv")
+        df_out.to_csv(out_path, sep="\t", index=False)
+        print(f"Saved {dataset_name} predictions: {out_path}")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, help="Path to feature table (.tsv/.csv)")
+    parser.add_argument("--input", required=True, help="One training feature table")
     parser.add_argument("--n-iter", type=int, default=30)
     parser.add_argument("--random-state", type=int, default=42)
-    parser.add_argument("--output-json", default="model_comparison_results.json")
-    parser.add_argument("--output-model", default="best_model.pkl")
+    parser.add_argument("--models-root", default="saved_models")
+    parser.add_argument("--predictions-root", default="external_predictions")
+    parser.add_argument("--results-root", default="results_by_dataset")
     args = parser.parse_args()
 
-    x, y = load_dataset(args.input)
+    dataset_tag = dataset_tag_from_path(args.input)
+
+    models_dir = os.path.join(args.models_root, dataset_tag)
+    preds_dir = os.path.join(args.predictions_root, dataset_tag)
+    results_dir = os.path.join(args.results_root, dataset_tag)
+
+    os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(preds_dir, exist_ok=True)
+    os.makedirs(results_dir, exist_ok=True)
+
+    x, y, feature_cols = load_dataset(args.input)
     splits = split_data(x, y, random_state=args.random_state)
 
     x_train, y_train = splits["train"]
@@ -221,6 +350,7 @@ def main():
     x_test, y_test = splits["test"]
     x_trainval, y_trainval = splits["trainval"]
 
+    print(f"\n=== DATASET: {dataset_tag} ===")
     print("Split sizes:")
     print(f"  Train:      {len(x_train)}")
     print(f"  Validation: {len(x_val)}")
@@ -251,64 +381,47 @@ def main():
         results.append(run_result)
         estimators[name] = best_estimator
 
-    if not HAS_XGBOOST:
-        print("xgboost is not installed: XGBoost model was skipped.")
+        model_path = os.path.join(models_dir, f"{name}.pkl")
+        joblib.dump(best_estimator, model_path)
+        print(f"Saved model: {model_path}")
 
     results_sorted = sorted(
         results,
-        key=lambda r: (r.test_mcc, -abs(r.cv_mcc - r.test_mcc)),
+        key=lambda r: (r.test_mcc, -r.generalization_gap_abs),
         reverse=True,
     )
 
-    print("\nModel comparison (sorted by test MCC):")
+    print("\nInternal S1 model comparison:")
     for r in results_sorted:
-        gap = abs(r.cv_mcc - r.test_mcc)
         print(
             f"- {r.model_name:20s} | CV MCC: {r.cv_mcc:.4f} | "
-            f"Test MCC: {r.test_mcc:.4f} | Test Acc: {r.test_accuracy:.4f} | "
-            f"Test F1: {r.test_f1:.4f} | |CV-Test| gap: {gap:.4f}"
+            f"Test MCC: {r.test_mcc:.4f} | Acc: {r.test_accuracy:.4f} | "
+            f"F1: {r.test_f1:.4f} | Gap: {r.generalization_gap_abs:.4f}"
         )
 
-    best = results_sorted[0]
-    best_estimator = estimators[best.model_name]
-
-    print(f"\nBest model: {best.model_name}")
-    print(f"Best params: {best.best_params}")
-
-    joblib.dump(best_estimator, args.output_model)
-    print(f"Saved fitted model to: {args.output_model}")
-
-    output_payload = {
-        "input": args.input,
-        "n_samples": len(x),
-        "split_sizes": {
-            "train": len(x_train),
-            "validation": len(x_val),
-            "test": len(x_test),
-        },
-        "results": [
+    results_json = os.path.join(results_dir, "internal_results.json")
+    with open(results_json, "w", encoding="utf-8") as f:
+        json.dump(
             {
-                "model": r.model_name,
-                "best_params": r.best_params,
-                "cv_mcc": r.cv_mcc,
-                "test_mcc": r.test_mcc,
-                "test_accuracy": r.test_accuracy,
-                "test_f1": r.test_f1,
-                "generalization_gap_abs": abs(r.cv_mcc - r.test_mcc),
-            }
-            for r in results_sorted
-        ],
-        "best_model": {
-            "model": best.model_name,
-            "best_params": best.best_params,
-        },
-    }
+                "dataset": dataset_tag,
+                "input": args.input,
+                "n_samples": len(x),
+                "split_sizes": {
+                    "train": len(x_train),
+                    "validation": len(x_val),
+                    "test": len(x_test),
+                },
+                "results": [asdict(r) for r in results_sorted],
+            },
+            f,
+            indent=2,
+        )
+    print(f"Saved internal results: {results_json}")
 
-    with open(args.output_json, "w", encoding="utf-8") as f:
-        json.dump(output_payload, f, indent=2)
-
-    print(f"Saved results to: {args.output_json}")
+    save_external_predictions("s3", external_sequences_s3, feature_cols, estimators, preds_dir)
+    save_external_predictions("s5", external_sequences_s5, feature_cols, estimators, preds_dir)
 
 
 if __name__ == "__main__":
     main()
+    

@@ -58,7 +58,11 @@ def split_data(x, y, random_state):
     )
 
     x_train, x_val, y_train, y_val = train_test_split(
-        x_trainval, y_trainval, test_size=0.25, stratify=y_trainval, random_state=random_state
+        x_trainval,
+        y_trainval,
+        test_size=0.25,
+        stratify=y_trainval,
+        random_state=random_state,
     )
 
     return {
@@ -211,6 +215,11 @@ def main():
     parser.add_argument("--random-state", type=int, default=42)
     parser.add_argument("--output-json", default="model_comparison_results.json")
     parser.add_argument("--output-model", default="best_model.pkl")
+    parser.add_argument(
+        "--save-model-name",
+        default=None,
+        help="Optional: save this specific model instead of the top-ranked model (e.g. xgboost)",
+    )
     args = parser.parse_args()
 
     x, y = load_dataset(args.input)
@@ -230,7 +239,10 @@ def main():
     negatives = int((1 - y_trainval).sum())
     scale_pos_weight = negatives / max(positives, 1)
 
-    searches = build_search_spaces(scale_pos_weight=scale_pos_weight, random_state=args.random_state)
+    searches = build_search_spaces(
+        scale_pos_weight=scale_pos_weight,
+        random_state=args.random_state,
+    )
 
     results = []
     estimators = {}
@@ -270,13 +282,22 @@ def main():
         )
 
     best = results_sorted[0]
-    best_estimator = estimators[best.model_name]
-
     print(f"\nBest model: {best.model_name}")
     print(f"Best params: {best.best_params}")
 
-    joblib.dump(best_estimator, args.output_model)
-    print(f"Saved fitted model to: {args.output_model}")
+    if args.save_model_name is not None:
+        if args.save_model_name not in estimators:
+            raise ValueError(
+                f"Requested model '{args.save_model_name}' not found. "
+                f"Available models: {list(estimators.keys())}"
+            )
+        model_to_save_name = args.save_model_name
+    else:
+        model_to_save_name = best.model_name
+
+    model_to_save = estimators[model_to_save_name]
+    joblib.dump(model_to_save, args.output_model)
+    print(f"Saved fitted model '{model_to_save_name}' to: {args.output_model}")
 
     output_payload = {
         "input": args.input,

@@ -1,0 +1,89 @@
+{
+  "dataset": "pcp_aac",
+  "input": "pcp_aac.tsv",
+  "n_samples": 523,
+  "split_sizes": {
+    "train": 313,
+    "validation": 105,
+    "test": 105
+  },
+  "results": [
+    {
+      "model_name": "svm_rbf",
+      "best_params": {
+        "clf__C": 4.0428727350273315,
+        "clf__gamma": 0.06796578090758151
+      },
+      "cv_mcc": 0.7861207467659239,
+      "test_mcc": 0.9329501915708812,
+      "test_accuracy": 0.9809523809523809,
+      "test_f1": 0.9444444444444444,
+      "generalization_gap_abs": 0.1468294448049573
+    },
+    {
+      "model_name": "knn",
+      "best_params": {
+        "clf__n_neighbors": 17,
+        "clf__p": 1,
+        "clf__weights": "distance"
+      },
+      "cv_mcc": 0.8141843288572312,
+      "test_mcc": 0.8733624684815949,
+      "test_accuracy": 0.9619047619047619,
+      "test_f1": 0.8947368421052632,
+      "generalization_gap_abs": 0.05917813962436369
+    },
+    {
+      "model_name": "xgboost",
+      "best_params": {
+        "clf__colsample_bytree": 0.8469926038510867,
+        "clf__learning_rate": 0.18737941654160145,
+        "clf__max_depth": 11,
+        "clf__min_child_weight": 1,
+        "clf__n_estimators": 674,
+        "clf__subsample": 0.8447411578889518
+      },
+      "cv_mcc": 0.8083004316619876,
+      "test_mcc": 0.8364388735388757,
+      "test_accuracy": 0.9523809523809523,
+      "test_f1": 0.8648648648648649,
+      "generalization_gap_abs": 0.028138441876888076
+    },
+    {
+      "model_name": "random_forest",
+      "best_params": {
+        "clf__max_depth": 20,
+        "clf__min_samples_leaf": 7,
+        "clf__min_samples_split": 12,
+        "clf__n_estimators": 658
+      },
+      "cv_mcc": 0.7952677891958855,
+      "test_mcc": 0.7707990516243899,
+      "test_accuracy": 0.9333333333333333,
+      "test_f1": 0.8108108108108109,
+      "generalization_gap_abs": 0.02446873757149559
+    },
+    {
+      "model_name": "svm_linear",
+      "best_params": {
+        "clf__C": 0.1767016940294795
+      },
+      "cv_mcc": 0.6494205219128368,
+      "test_mcc": 0.7343273037996354,
+      "test_accuracy": 0.9047619047619048,
+      "test_f1": 0.7727272727272727,
+      "generalization_gap_abs": 0.08490678188679857
+    },
+    {
+      "model_name": "logistic_regression",
+      "best_params": {
+        "clf__C": 3.907967156822881
+      },
+      "cv_mcc": 0.6081702854062657,
+      "test_mcc": 0.697154239345804,
+      "test_accuracy": 0.8857142857142857,
+      "test_f1": 0.7391304347826086,
+      "generalization_gap_abs": 0.08898395393953829
+    }
+  ]
+}
