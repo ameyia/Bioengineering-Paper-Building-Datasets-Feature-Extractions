@@ -1,0 +1,12 @@
+biopython
+joblib
+matplotlib
+numpy
+openpyxl
+pandas
+propy3
+scikit-learn
+scipy
+shap
+xgboost
+

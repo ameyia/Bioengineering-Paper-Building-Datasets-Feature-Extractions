@@ -1,0 +1,13 @@
+{
+  "condition": "training_with_proxy_peptides",
+  "feature_tables": [
+    "data/processed/proxy/s1_proxy_no_overlap_pcp_aac.tsv",
+    "data/processed/proxy/s1_proxy_no_overlap_pcp_aac_ctd.tsv",
+    "data/processed/proxy/s1_proxy_no_overlap_pcp_aac_ctd_dpc.tsv"
+  ],
+  "external_validation_output": "results/proxy/external_validation",
+  "random_seeds": 10,
+  "primary_internal_metric": "Matthews correlation coefficient",
+  "external_metric": "positive detection rate"
+}
+

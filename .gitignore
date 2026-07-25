@@ -1,0 +1,32 @@
+# macOS and editor files
+.DS_Store
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# Temporary and local working files
+tmp/
+*.tmp
+*.log
+
+# Local environments and secrets
+.env
+.env.*
+
+# Generated inspection metadata is retained when already tracked, but new files
+# should not be added automatically.
+*.inspect.ndjson
+
